@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Grounded Citation Checking with Small Models</title>
+<style>.ltx_page_main { margin: 0 }</style>
+<script>console.log("arxiv page script")</script>
+</head>
+<body>
+<header class="desktop_header"><nav><a href="/">arXiv</a> <button>Report Issue</button></nav></header>
+<div class="ltx_page_main">
+<article class="ltx_document ltx_authors_1line">
+<h1 class="ltx_title ltx_title_document">Grounded Citation Checking with Small Models</h1>
+<div class="ltx_authors"><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Ada Example</span></span></div>
+<div class="ltx_abstract">
+<h6 class="ltx_title ltx_title_abstract">Abstract</h6>
+<p class="ltx_p">We study whether a sentence that cites a paper is actually supported by that paper. Our approach retrieves passages from the cited work and asks a verifier to judge support. On a benchmark of 1,200 citing sentences, the verifier agrees with human annotators 87% of the time.</p>
+</div>
+<section class="ltx_section" id="S1">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>Introduction</h2>
+<div class="ltx_para" id="S1.p1">
+<p class="ltx_p">Literature reviews written with machine assistance often contain citations that look plausible but are not grounded in the cited source. A reader who trusts these citations inherits the error. Checking every citation by hand means opening each source, finding the relevant passage, and reading it closely, which takes several minutes per citation. For a review with two hundred citations this is a full working week. We therefore ask whether the first steps can be automated reliably.</p>
+</div>
+<div class="ltx_para" id="S1.p2">
+<p class="ltx_p">Prior work has focused on citation recommendation rather than verification<sup class="ltx_note_mark">1</sup>. Recommendation systems propose a source for a claim; verification systems decide whether a proposed source supports the claim. The two problems share retrieval machinery but differ in what counts as success. A recommender that proposes a related paper has partly succeeded, whereas a verifier that accepts a related but non-supporting paper has failed outright.</p>
+</div>
+</section>
+<section class="ltx_section" id="S2">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>Method</h2>
+<section class="ltx_subsection" id="S2.SS1">
+<h3 class="ltx_title ltx_title_subsection"><span class="ltx_tag ltx_tag_subsection">2.1 </span>Retrieval</h3>
+<div class="ltx_para">
+<p class="ltx_p">We split each cited paper into passages of roughly one thousand characters, keeping paragraph boundaries where possible. Each passage is scored against the citing sentence with a lexical model and a dense model, and the scores are combined as <math alttext="s = \alpha s_{lex} + (1-\alpha) s_{dense}" display="inline"><semantics><mi>s</mi><mo>=</mo><mi>α</mi></semantics></math> with <math alttext="\alpha = 0.3"><mi>α</mi></math>. The top five passages are passed to the verifier. We found that including the section heading with each passage improved accuracy, because headings such as Limitations or Related Work change how a statement should be read. Passages from the reference list are excluded, since a paper listing another paper in its bibliography says nothing about whether it supports a claim. Figures and tables are represented by their captions only. In early experiments we also tried sentence-level passages, but these lost too much context: a sentence beginning with “This effect” is uninterpretable without its predecessor. Longer passages of two thousand characters performed slightly worse, apparently because the verifier was distracted by unrelated material. The one-thousand-character setting was therefore used throughout, e.g. in all results reported below, and we did not tune it further.</p>
+</div>
+</section>
+<section class="ltx_subsection" id="S2.SS2">
+<h3 class="ltx_title ltx_title_subsection"><span class="ltx_tag ltx_tag_subsection">2.2 </span>Verification</h3>
+<div class="ltx_para">
+<p class="ltx_p">The verifier receives the citing sentence and the retrieved passages and outputs one of three labels: supported, partially supported, or unsupported. It must also quote the span that supports its decision, which lets a human check the judgment in seconds rather than minutes.</p>
+</div>
+<figure class="ltx_table"><figcaption class="ltx_caption">Table 1: Agreement with annotators by label.</figcaption>
+<table class="ltx_tabular"><tr><td>Supported</td><td>0.91</td></tr><tr><td>Unsupported</td><td>0.84</td></tr></table></figure>
+</section>
+</section>
+<section class="ltx_section" id="S3">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">3 </span>Limitations</h2>
+<div class="ltx_para">
+<p class="ltx_p">The approach depends on obtaining the full text of the cited paper. Paywalled sources and scanned PDFs without a text layer cannot be checked. Mathematical content is also handled poorly when it is only available as images.</p>
+</div>
+</section>
+<footer class="ltx_page_footer"><div>Generated by LaTeXML</div></footer>
+</article>
+</div>
+</body>
+</html>
