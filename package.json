@@ -12,9 +12,12 @@
     "ingest-paper": "tsx scripts/ingest-paper.ts",
     "status": "tsx scripts/status.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check-citation": "tsx --env-file-if-exists=.env scripts/check-citation.ts",
+    "compare-retrieval": "tsx scripts/compare-retrieval.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^13.0.3",
     "jsdom": "^29.1.1",

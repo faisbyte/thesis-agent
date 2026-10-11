@@ -5,6 +5,7 @@ import { canonicalId, fetchUrl, normalizeUrl, parseArxivId, type FetchFn, type F
 import { extractArxivHtml, extractHtml, parseArxivAbsMeta } from "./extract";
 import { extractPdf } from "./extract-pdf";
 import { chunkText } from "./chunk";
+import { ensureEmbeddings, type Embedder } from "./retrieve-embed";
 
 export type Outcome = "FETCHED" | "REUSED" | "FAILED";
 export type ExtractionMethod = "arxiv_html" | "pdf" | "html" | "failed";
@@ -25,6 +26,8 @@ export interface IngestOptions {
   fetchOptions?: FetchOptions;
   /** Re-fetch even if the paper is already stored. */
   force?: boolean;
+  /** If given, embed the new chunks right after storing them. */
+  embedder?: Embedder;
 }
 
 interface Fetched {
@@ -136,6 +139,16 @@ export async function ingestPaper(sourceUrl: string, opts: IngestOptions): Promi
     return { outcome: "FAILED", paperId, title: fetched.title, method: "failed", chunkCount: 0, durationMs: elapsed(), detail };
   }
 
+  // Best-effort: the paper is stored either way, and retrieve-embed backfills missing vectors.
+  let detail = fetched.detail;
+  if (opts.embedder) {
+    try {
+      await ensureEmbeddings(db, paperId, opts.embedder);
+    } catch (err) {
+      detail = [detail, `embedding failed: ${err instanceof Error ? err.message : err}`].filter(Boolean).join("; ");
+    }
+  }
+
   return {
     outcome: "FETCHED",
     paperId,
@@ -143,7 +156,7 @@ export async function ingestPaper(sourceUrl: string, opts: IngestOptions): Promi
     method: fetched.method,
     chunkCount: chunks.length,
     durationMs: elapsed(),
-    detail: fetched.detail,
+    detail,
   };
 }
 

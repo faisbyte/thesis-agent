@@ -1,5 +1,6 @@
 import { openDb } from "../src/lib/db";
 import { ingestPaper } from "../src/lib/ingest";
+import { localEmbedder } from "../src/lib/retrieve-embed";
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
@@ -10,7 +11,7 @@ if (!url) {
 }
 
 const db = openDb();
-const r = await ingestPaper(url, { db, force });
+const r = await ingestPaper(url, { db, force, embedder: localEmbedder() });
 db.close();
 
 const seconds = `${(r.durationMs / 1000).toFixed(1)}s`;
@@ -21,3 +22,4 @@ if (r.outcome === "FAILED") {
 console.log(
   [r.outcome.padEnd(8), r.paperId, JSON.stringify(r.title ?? "(untitled)"), r.method, `${r.chunkCount} chunks`, seconds].join("  "),
 );
+if (r.detail?.includes("embedding failed")) console.warn(`warning: ${r.detail}`);

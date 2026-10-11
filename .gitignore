@@ -4,3 +4,6 @@ next-env.d.ts
 *.tsbuildinfo
 data/*
 !data/.gitkeep
+.env
+.env.*
+!.env.example
