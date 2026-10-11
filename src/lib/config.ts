@@ -23,8 +23,9 @@ export const config = {
   // Chunks under these headings are never returned (reference lists match
   // citation sentences lexically but never support them).
   excludedHeadings: /^(\d+\.?\s*)?(references|bibliography|works cited|literature cited)$/i,
-  // Used by check-citation when --retriever isn't given. Placeholder until the
-  // keyword-vs-embedding comparison is decided.
+  // Used by check-citation when --retriever isn't given. Embedding is the default;
+  // keyword (BM25) stays available via --retriever=keyword and compare-retrieval
+  // as a cross-check. See docs/decisions/0001-default-retriever.md.
   defaultRetriever: "embed" as "keyword" | "embed",
 
   // Local embedding model (transformers.js, downloaded once into embedModelDir)
