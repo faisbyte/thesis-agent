@@ -1,13 +1,7 @@
-import { openDb } from "../src/lib/db";
+import { listPapers, openDb } from "../src/lib/db";
 
 const db = openDb();
-const rows = db
-  .prepare(
-    `SELECT p.id, p.title, p.fetched_at, p.extraction_method, p.char_count,
-            (SELECT COUNT(*) FROM chunks c WHERE c.paper_id = p.id) AS chunk_count
-     FROM papers p ORDER BY p.fetched_at DESC`,
-  )
-  .all() as { id: string; title: string | null; fetched_at: string | null; extraction_method: string | null; char_count: number | null; chunk_count: number }[];
+const rows = listPapers(db);
 db.close();
 
 if (rows.length === 0) {

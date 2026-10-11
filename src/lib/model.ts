@@ -17,6 +17,8 @@ export interface ModelResponse {
   text: string;
   stopReason: string;
   model: string;
+  /** Billed tokens for this call, when the API reports them. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 /** What verify.ts calls. Tests pass a fake. */
@@ -80,6 +82,7 @@ export function anthropicModel(opts: { apiKey?: string; fetchFn?: FetchFn } = {}
       content?: { type: string; text?: string }[];
       stop_reason?: string;
       model?: string;
+      usage?: { input_tokens?: number; output_tokens?: number };
       error?: { type: string; message: string };
     } | null;
     if (!res!.ok) {
@@ -91,6 +94,9 @@ export function anthropicModel(opts: { apiKey?: string; fetchFn?: FetchFn } = {}
       .filter((b) => b.type === "text")
       .map((b) => b.text ?? "")
       .join("");
-    return { text, stopReason: data?.stop_reason ?? "unknown", model: data?.model ?? config.anthropicModel };
+    const usage = data?.usage
+      ? { inputTokens: data.usage.input_tokens ?? 0, outputTokens: data.usage.output_tokens ?? 0 }
+      : undefined;
+    return { text, stopReason: data?.stop_reason ?? "unknown", model: data?.model ?? config.anthropicModel, usage };
   };
 }

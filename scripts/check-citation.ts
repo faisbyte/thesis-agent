@@ -15,8 +15,8 @@ const { values } = parseArgs({
     limit: { type: "string", default: String(config.retrieveLimit) },
   },
 });
-if (!values.paper || !values.sentence || (values.retriever !== "keyword" && values.retriever !== "embed")) {
-  console.error('usage: npm run check-citation -- --paper="<url or id>" --sentence="..." [--retriever=keyword|embed] [--limit=5]');
+if (!values.paper || !values.sentence || !["both", "keyword", "embed"].includes(values.retriever!)) {
+  console.error('usage: npm run check-citation -- --paper="<url or id>" --sentence="..." [--retriever=both|embed|keyword] [--limit=5]');
   process.exit(2);
 }
 const retriever = values.retriever as RetrieverName;
@@ -28,14 +28,18 @@ try {
     paper: values.paper,
     sentence: values.sentence,
     retriever,
-    embedder: retriever === "embed" ? localEmbedder() : undefined,
+    embedder: retriever === "keyword" ? undefined : localEmbedder(),
     limit: Number(values.limit),
   });
 
   console.log(`VERDICT      ${r.verdict.toUpperCase()}${r.grounded ? "" : "   (UNVERIFIED: a quote was not found in its chunk, check by hand)"}`);
   console.log(`paper        ${r.paperId}`);
   console.log(`sentence     ${r.sentence}`);
-  console.log(`retriever    ${r.retriever}${r.retriever === "embed" ? ` (${config.embedModel})` : " (FTS5/BM25)"}, ${r.chunks.length} chunks`);
+  const label = { both: `merged embed (${config.embedModel}) + keyword (FTS5/BM25)`, embed: `embed (${config.embedModel})`, keyword: "keyword (FTS5/BM25)" }[r.retriever];
+  const count = (s: string) => r.chunks.filter((c) => c.foundBy.includes(s as "embed")).length;
+  const overlap = r.chunks.filter((c) => c.foundBy.length === 2).length;
+  console.log(`retriever    ${r.retriever}: ${label}`);
+  console.log(`evidence     ${r.chunks.length} chunks` + (r.retriever === "both" ? ` (embed ${count("embed")}, keyword ${count("keyword")}, found by both ${overlap})` : ""));
   console.log(`model        ${r.model ?? "(not called)"}, ${r.modelCalls} call(s)`);
   console.log(`\n${r.explanation}\n`);
 
@@ -44,6 +48,7 @@ try {
     const where =
       e.quoteStart !== null ? `quote at chars ${e.quoteStart}-${e.quoteEnd}` : "QUOTE NOT FOUND in chunk text";
     console.log(`[${e.stance}] evidence chunk ${e.chunk} = stored chunk #${c.ordinal} "${c.heading ?? ""}" chars ${c.charStart}-${c.charEnd}, ${where}`);
+    console.log(`    found via: ${foundVia(c)}`);
     console.log(`    "${e.quote}"`);
   }
   if (r.evidence.length === 0) console.log("(no evidence cited)");
@@ -57,4 +62,8 @@ try {
   }
 } finally {
   db.close();
+}
+
+function foundVia(c: { foundBy: string[]; ranks: { embed?: number; keyword?: number } }): string {
+  return c.foundBy.map((s) => `${s} (rank ${c.ranks[s as "embed" | "keyword"]})`).join(", ");
 }

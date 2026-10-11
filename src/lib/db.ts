@@ -113,3 +113,26 @@ export function getStoredPaper(db: DB, paperIdOrUrl: string): StoredPaper {
   }
   return row;
 }
+
+export interface PaperSummary {
+  id: string;
+  title: string | null;
+  authors: string | null;
+  arxiv_id: string | null;
+  source_url: string;
+  fetched_at: string | null;
+  extraction_method: string | null;
+  char_count: number | null;
+  chunk_count: number;
+}
+
+/** Every papers row (including 'failed' placeholders), newest first, with its chunk count. */
+export function listPapers(db: DB): PaperSummary[] {
+  return db
+    .prepare(
+      `SELECT p.id, p.title, p.authors, p.arxiv_id, p.source_url, p.fetched_at, p.extraction_method, p.char_count,
+              (SELECT COUNT(*) FROM chunks c WHERE c.paper_id = p.id) AS chunk_count
+       FROM papers p ORDER BY p.fetched_at DESC`,
+    )
+    .all() as PaperSummary[];
+}

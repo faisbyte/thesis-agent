@@ -5,7 +5,15 @@ import { buildUserPrompt, SYSTEM_PROMPT, VERDICT_SCHEMA, VERDICTS, type Verdict 
 import { retrieveKeyword, type RetrievedChunk } from "./retrieve-keyword";
 import { retrieveEmbed, type Embedder } from "./retrieve-embed";
 
-export type RetrieverName = "keyword" | "embed";
+/** "both" runs keyword and embedding retrieval and merges their chunks into one evidence set. */
+export type RetrieverName = "keyword" | "embed" | "both";
+
+/** A retrieved chunk plus which retriever(s) surfaced it and at what rank (1-based). */
+export interface EvidenceChunk extends RetrievedChunk {
+  foundBy: ("embed" | "keyword")[];
+  ranks: { embed?: number; keyword?: number };
+  scores: { embed?: number; keyword?: number };
+}
 
 export interface EvidenceItem {
   chunk: number; // 1-based position in `chunks`
@@ -24,7 +32,7 @@ export interface VerifyResult {
   verdict: Verdict;
   explanation: string;
   evidence: EvidenceItem[];
-  chunks: RetrievedChunk[];
+  chunks: EvidenceChunk[];
   /**
    * True when every quote was found in the chunk it cites, and a relevant /
    * partially_relevant verdict has at least one located supporting quote.
@@ -33,6 +41,8 @@ export interface VerifyResult {
   grounded: boolean;
   modelCalls: number;
   model: string | null;
+  /** Tokens across all model calls for this check (including a retry). */
+  usage: { inputTokens: number; outputTokens: number };
 }
 
 export class VerificationError extends Error {
@@ -49,9 +59,12 @@ export interface VerifyOptions {
   paper: string; // paper id or any URL form of it
   sentence: string;
   retriever: RetrieverName;
-  embedder?: Embedder; // required for retriever "embed"
+  embedder?: Embedder; // required for retriever "embed" and "both"
   model?: ModelFn;
+  /** Chunks taken from each retriever. */
   limit?: number;
+  /** Cap on the merged set for retriever "both". */
+  maxMerged?: number;
 }
 
 /** retrieve -> prompt -> model -> validate. Throws PaperNotFoundError, ModelError or VerificationError. */
@@ -60,13 +73,10 @@ export async function verifyCitation(opts: VerifyOptions): Promise<VerifyResult>
   const paper = getStoredPaper(db, opts.paper);
   const limit = opts.limit ?? config.retrieveLimit;
 
-  let chunks: RetrievedChunk[];
-  if (retriever === "keyword") {
-    chunks = retrieveKeyword(db, paper.id, sentence, limit);
-  } else {
-    if (!opts.embedder) throw new Error("retriever 'embed' needs an embedder");
-    chunks = await retrieveEmbed(db, paper.id, sentence, opts.embedder, limit);
-  }
+  if (retriever !== "keyword" && !opts.embedder) throw new Error(`retriever '${retriever}' needs an embedder`);
+  const embedList = retriever === "keyword" ? [] : await retrieveEmbed(db, paper.id, sentence, opts.embedder!, limit);
+  const keywordList = retriever === "embed" ? [] : retrieveKeyword(db, paper.id, sentence, limit);
+  const chunks = mergeChunks(embedList, keywordList, opts.maxMerged ?? config.mergedMaxChunks);
 
   const base = { paperId: paper.id, sentence, retriever, chunks };
 
@@ -75,21 +85,25 @@ export async function verifyCitation(opts: VerifyOptions): Promise<VerifyResult>
     return {
       ...base,
       verdict: "irrelevant",
-      explanation: `The ${retriever} retriever found no chunks in this paper matching the sentence, so there is no evidence to check it against.`,
+      explanation: `${retriever === "both" ? "Neither retriever" : `The ${retriever} retriever`} found no chunks in this paper matching the sentence, so there is no evidence to check it against.`,
       evidence: [],
       grounded: true,
       modelCalls: 0,
       model: null,
+      usage: { inputTokens: 0, outputTokens: 0 },
     };
   }
 
   const callModel = opts.model ?? anthropicModel();
   const messages: ModelMessage[] = [{ role: "user", content: buildUserPrompt(sentence, chunks, paper.title) }];
   const replies: string[] = [];
+  const usage = { inputTokens: 0, outputTokens: 0 };
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     const res = await callModel({ system: SYSTEM_PROMPT, messages, schema: VERDICT_SCHEMA });
     replies.push(res.text);
+    usage.inputTokens += res.usage?.inputTokens ?? 0;
+    usage.outputTokens += res.usage?.outputTokens ?? 0;
     const parsed = res.stopReason === "max_tokens" ? { error: "reply was cut off (max_tokens)" } : parseReply(res.text, chunks.length);
 
     if ("value" in parsed) {
@@ -104,6 +118,7 @@ export async function verifyCitation(opts: VerifyOptions): Promise<VerifyResult>
         grounded: allLocated && (parsed.value.verdict === "irrelevant" || hasLocatedSupport),
         modelCalls: attempt,
         model: res.model,
+        usage,
       };
     }
 
@@ -117,6 +132,34 @@ export async function verifyCitation(opts: VerifyOptions): Promise<VerifyResult>
     }
   }
   throw new Error("unreachable");
+}
+
+/**
+ * Union of two ranked lists, deduplicated by chunk id. Chunks are taken in
+ * rank order, alternating embed then keyword (embed #1, keyword #1, embed #2,
+ * ...), so if the cap bites, each retriever's best chunks survive. Each chunk
+ * records which retriever(s) found it.
+ */
+export function mergeChunks(embed: RetrievedChunk[], keyword: RetrievedChunk[], max: number): EvidenceChunk[] {
+  const byId = new Map<number, EvidenceChunk>();
+  const add = (c: RetrievedChunk, source: "embed" | "keyword", rank: number) => {
+    const existing = byId.get(c.chunkId);
+    if (existing) {
+      existing.foundBy.push(source);
+      existing.ranks[source] = rank;
+      existing.scores[source] = c.score;
+      return;
+    }
+    if (byId.size >= max) return;
+    byId.set(c.chunkId, { ...c, foundBy: [source], ranks: { [source]: rank }, scores: { [source]: c.score } });
+  };
+  for (let i = 0; i < Math.max(embed.length, keyword.length); i++) {
+    if (embed[i]) add(embed[i], "embed", i + 1);
+    if (keyword[i]) add(keyword[i], "keyword", i + 1);
+  }
+  // Stable tag order for display, whichever retriever reached the chunk first.
+  for (const c of byId.values()) c.foundBy.sort();
+  return [...byId.values()];
 }
 
 interface ParsedReply {

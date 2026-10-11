@@ -23,10 +23,12 @@ export const config = {
   // Chunks under these headings are never returned (reference lists match
   // citation sentences lexically but never support them).
   excludedHeadings: /^(\d+\.?\s*)?(references|bibliography|works cited|literature cited)$/i,
-  // Used by check-citation when --retriever isn't given. Embedding is the default;
-  // keyword (BM25) stays available via --retriever=keyword and compare-retrieval
-  // as a cross-check. See docs/decisions/0001-default-retriever.md.
-  defaultRetriever: "embed" as "keyword" | "embed",
+  // Default for check-citation, the API and the UI. "both" merges keyword and
+  // embedding results (each capped at retrieveLimit) into one evidence set for
+  // a single model call. See docs/decisions/0001-default-retriever.md.
+  defaultRetriever: "both" as "keyword" | "embed" | "both",
+  // Most chunks a merged ("both") evidence set may hold: retrieveLimit from each, deduplicated.
+  mergedMaxChunks: 10,
 
   // Local embedding model (transformers.js, downloaded once into embedModelDir)
   embedModel: "Xenova/bge-small-en-v1.5",
@@ -39,4 +41,6 @@ export const config = {
   anthropicEffort: "medium" as "low" | "medium" | "high" | "xhigh" | "max",
   anthropicMaxTokens: 16_000,
   anthropicTimeoutMs: 120_000,
+  // USD per million tokens for anthropicModel, used only to show an estimated cost per check.
+  anthropicPricePerMTok: { input: 4, output: 20 },
 };
