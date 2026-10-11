@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { CheckItemResult, CheckResult, CheckRetriever } from "@/lib/check";
 import type { PaperSummary } from "@/lib/db";
+import { foundViaText, orderRows, toMarkdown, VERDICT_LABEL, verdictLabel, type BatchView } from "./batch-utils";
 
 export default function Home() {
   const [papers, setPapers] = useState<PaperSummary[] | null>(null);
@@ -23,7 +24,7 @@ export default function Home() {
         they're checked.
       </p>
       <PapersPanel papers={papers} />
-      <SingleCheckPanel onIngested={loadPapers} />
+      <SingleCheckPanel papers={papers ?? []} onIngested={loadPapers} />
       <BatchCheckPanel onIngested={loadPapers} />
     </main>
   );
@@ -100,7 +101,23 @@ async function postCheck(url: string, sentence: string, retriever: CheckRetrieve
   }
 }
 
-function SingleCheckPanel({ onIngested }: { onIngested: () => void }) {
+/**
+ * Best-effort client-side guess at whether a URL is already stored, so the cost
+ * is clear before submitting. The server decides for real (ingestPaper -> REUSED).
+ */
+function findStored(papers: PaperSummary[], url: string): PaperSummary | undefined {
+  const u = url.trim().replace(/[#?].*$/, "").replace(/\/$/, "");
+  if (!u) return undefined;
+  return papers.find(
+    (p) =>
+      p.extraction_method !== "failed" &&
+      (p.id === u ||
+        p.source_url.replace(/\/$/, "") === u ||
+        (p.arxiv_id !== null && new RegExp(`arxiv\\.org/(abs|pdf|html)/${p.arxiv_id.replace(".", "\\.")}(v\\d+)?(\\.pdf)?$`).test(u))),
+  );
+}
+
+function SingleCheckPanel({ papers, onIngested }: { papers: PaperSummary[]; onIngested: () => void }) {
   const [url, setUrl] = useState("");
   const [sentence, setSentence] = useState("");
   const [retriever, setRetriever] = useState<CheckRetriever>("both");
@@ -144,9 +161,25 @@ function SingleCheckPanel({ onIngested }: { onIngested: () => void }) {
           </button>
         </div>
       </form>
+      {url.trim() && !running && <IngestHint stored={findStored(papers, url)} retriever={retriever} />}
       {running && <p className="muted">Working… a first-time paper is fetched and embedded before the model call.</p>}
       {result && <ItemResult item={result} />}
     </section>
+  );
+}
+
+function IngestHint({ stored, retriever }: { stored: PaperSummary | undefined; retriever: CheckRetriever }) {
+  const calls = retriever === "side-by-side" ? "2 model calls" : "1 model call";
+  return stored ? (
+    <p className="cost">
+      <span className="tag">already stored</span> {stored.title ?? stored.id}, {stored.chunk_count} chunks. This check costs{" "}
+      {calls} only (about $0.02 each).
+    </p>
+  ) : (
+    <p className="cost">
+      <span className="tag fresh">not stored yet</span> This check will first <strong>ingest the paper</strong> (fetched,
+      extracted and embedded locally, free, a few seconds) and then make {calls} (billed, about $0.02 each).
+    </p>
   );
 }
 
@@ -183,6 +216,8 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
   const [retriever, setRetriever] = useState<CheckRetriever>("both");
   const [rows, setRows] = useState<{ input: BatchLine; result: CheckItemResult | null }[]>([]);
   const [running, setRunning] = useState(false);
+  const [view, setView] = useState<BatchView>("problems-first");
+  const [copied, setCopied] = useState<string | null>(null);
   const lines = parseBatch(text);
 
   const run = async () => {
@@ -204,6 +239,19 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
   };
 
   const finished = rows.filter((r) => r.result).length;
+  const order = orderRows(rows, view);
+
+  const copyMarkdown = async () => {
+    const md = toMarkdown(order.map((i) => ({ line: i + 1, result: rows[i].result, sentence: rows[i].input.sentence, url: rows[i].input.url })));
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopied(`Copied ${order.length} row${order.length === 1 ? "" : "s"} as markdown.`);
+    } catch {
+      // Clipboard can be blocked; show the text so it can be copied by hand.
+      setCopied(md);
+    }
+  };
+
   const totalCost = rows.reduce((sum, r) => sum + (r.result?.results.reduce((s, x) => s + x.costUsd, 0) ?? 0), 0);
 
   return (
@@ -238,9 +286,25 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
 
       {rows.length > 0 && (
         <>
-          <p className="muted">
-            {finished} of {rows.length} done · estimated model cost so far ${totalCost.toFixed(4)}
-          </p>
+          <div className="row">
+            <span className="muted">
+              {finished} of {rows.length} done · estimated model cost so far ${totalCost.toFixed(4)}
+            </span>
+            <span>
+              <label className="inline">
+                Show{" "}
+                <select value={view} onChange={(e) => setView(e.target.value as BatchView)}>
+                  <option value="problems-first">problems first (errors, unverified, irrelevant, partial)</option>
+                  <option value="problems-only">problems only</option>
+                  <option value="input-order">all, in input order</option>
+                </select>
+              </label>{" "}
+              <button onClick={copyMarkdown} disabled={running || finished === 0}>
+                Copy as markdown
+              </button>
+            </span>
+          </div>
+          {copied && (copied.startsWith("|") ? <pre className="chunk">{copied}</pre> : <p className="muted">{copied}</p>)}
           <div className="scroll">
             <table className="batch">
               <thead>
@@ -249,14 +313,21 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
                   <th>Sentence</th>
                   <th>Paper</th>
                   <th>Verdict</th>
-                  <th>Quote</th>
+                  <th>Key evidence</th>
                   <th>Cost</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ input, result }, i) => (
-                  <BatchRow key={i} index={i + 1} input={input} result={result} pending={running && !result && i === finished} />
+                {order.map((i) => (
+                  <BatchRow key={i} index={i + 1} input={rows[i].input} result={rows[i].result} pending={running && !rows[i].result && i === finished} />
                 ))}
+                {order.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="muted">
+                      No problem verdicts. Switch to “all” to see the {rows.length} relevant row{rows.length === 1 ? "" : "s"}.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -269,7 +340,8 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
 function BatchRow({ index, input, result, pending }: { index: number; input: BatchLine; result: CheckItemResult | null; pending: boolean }) {
   const [open, setOpen] = useState(false);
   const first = result?.results[0];
-  const firstQuote = first?.evidence[0]?.quote;
+  // Lead with a quote whose stance cuts against the verdict, if there is one: that's the informative case.
+  const lead = first && (first.evidence.find((e) => isMismatch(first, e)) ?? first.evidence[0]);
   return (
     <>
       <tr className={result ? "clickable" : ""} onClick={() => result && setOpen(!open)}>
@@ -285,7 +357,18 @@ function BatchRow({ index, input, result, pending }: { index: number; input: Bat
             result.results.map((r) => <VerdictBadge key={r.retriever} r={r} />)
           )}
         </td>
-        <td>{result?.error ? <span className="bad">{truncate(result.error, 80)}</span> : firstQuote ? `“${truncate(firstQuote, 80)}”` : ""}</td>
+        <td>
+          {result?.error ? (
+            <span className="bad">{truncate(result.error, 80)}</span>
+          ) : first && lead ? (
+            <>
+              <StanceTag stance={lead.stance} mismatch={isMismatch(first, lead)} /> “{truncate(lead.quote, 80)}”{" "}
+              <ViaTags c={first.chunks[lead.chunk - 1]} />
+            </>
+          ) : first ? (
+            <span className="muted">no quote</span>
+          ) : null}
+        </td>
         <td className="nowrap">{result && <CostSummary item={result} compact />}</td>
       </tr>
       {open && result && (
@@ -359,8 +442,6 @@ function CostSummary({ item, compact = false }: { item: CheckItemResult; compact
   );
 }
 
-const VERDICT_LABEL = { relevant: "RELEVANT", partially_relevant: "PARTIALLY RELEVANT", irrelevant: "IRRELEVANT" } as const;
-
 function VerdictBadge({ r }: { r: CheckResult }) {
   if (!r.grounded) {
     return (
@@ -371,7 +452,7 @@ function VerdictBadge({ r }: { r: CheckResult }) {
   }
   return (
     <span className={`badge ${r.verdict}`}>
-      {VERDICT_LABEL[r.verdict]} · {r.retriever}
+      {verdictLabel(r)} · {r.retriever}
     </span>
   );
 }
@@ -383,33 +464,34 @@ function VerdictDetail({ r }: { r: CheckResult }) {
         <VerdictBadge r={r} />
         <span className="muted">
           {" "}
-          retriever: {RETRIEVER_LABEL[r.retriever]} · {r.chunks.length} chunks ·{" "}
-          {r.model ?? "no model call"}
+          {RETRIEVER_LABEL[r.retriever]} · {r.chunks.length} chunks retrieved · {r.model ?? "no model call"}
         </span>
       </div>
       {!r.grounded && (
         <p className="bad">The model said {VERDICT_LABEL[r.verdict]}, but at least one quote isn't in the chunk it cites. Check by hand.</p>
       )}
-      <p>{r.explanation}</p>
+      <p className="explanation">{r.explanation}</p>
 
       {r.evidence.length === 0 ? (
         <p className="muted">No evidence quoted.</p>
       ) : (
         r.evidence.map((e, i) => {
           const c = r.chunks[e.chunk - 1];
+          const mismatch = isMismatch(r, e);
           return (
-            <div key={i} className={`evidence ${e.stance}`}>
-              <div className="muted">
-                {e.stance === "supports" ? "Supports" : "Contradicts"}, from chunk #{c.ordinal} “{c.heading ?? "no heading"}”, chars{" "}
-                {c.charStart}–{c.charEnd}
-                {e.quoteStart !== null ? `, quote at chars ${e.quoteStart}–${e.quoteEnd}` : ", quote NOT found in chunk"}
-              </div>
-              <div className="muted">
-                Found via: <FoundVia c={c} />
+            <div key={i} className={`evidence ${e.stance}${mismatch ? " mismatch" : ""}`}>
+              <div>
+                <StanceTag stance={e.stance} mismatch={mismatch} /> <ViaTags c={c} />{" "}
+                <span className="muted">“{c.heading ?? "no heading"}”</span>
               </div>
               <blockquote>{e.quote}</blockquote>
               <details>
-                <summary>Show full chunk</summary>
+                <summary>Show full evidence</summary>
+                <p className="muted">
+                  Chunk #{c.ordinal}, chars {c.charStart}–{c.charEnd}
+                  {e.quoteStart !== null ? `, quote at chars ${e.quoteStart}–${e.quoteEnd}` : ", quote NOT found in chunk"} · scores:{" "}
+                  <FoundVia c={c} />
+                </p>
                 <ChunkText text={c.text} charStart={c.charStart} quoteStart={e.quoteStart} quoteEnd={e.quoteEnd} />
               </details>
             </div>
@@ -418,7 +500,7 @@ function VerdictDetail({ r }: { r: CheckResult }) {
       )}
 
       <details>
-        <summary>All {r.chunks.length} retrieved chunks</summary>
+        <summary>All {r.chunks.length} retrieved chunks (including ones not cited)</summary>
         <ol className="chunks">
           {r.chunks.map((c) => (
             <li key={c.chunkId}>
@@ -434,6 +516,36 @@ function VerdictDetail({ r }: { r: CheckResult }) {
         </ol>
       </details>
     </div>
+  );
+}
+
+/** A supporting quote under an IRRELEVANT verdict, or a contradicting one under RELEVANT. */
+function isMismatch(r: CheckResult, e: CheckResult["evidence"][number]): boolean {
+  return (r.verdict === "relevant" && e.stance === "contradicts") || (r.verdict === "irrelevant" && e.stance === "supports");
+}
+
+function StanceTag({ stance, mismatch }: { stance: "supports" | "contradicts"; mismatch: boolean }) {
+  return (
+    <span
+      className={`stance ${stance}${mismatch ? " mismatch" : ""}`}
+      title={mismatch ? "This quote's stance cuts against the overall verdict. Worth a look." : undefined}
+    >
+      {stance === "supports" ? "✓ supports" : "✗ contradicts"}
+      {mismatch && " ⚠"}
+    </span>
+  );
+}
+
+/** Compact found-via tags for a cited chunk: "embed #2", "keyword #1". */
+function ViaTags({ c }: { c: CheckResult["chunks"][number] }) {
+  return (
+    <span title={`found via ${foundViaText(c)}`}>
+      {c.foundBy.map((s) => (
+        <span key={s} className={`tag via-${s}`}>
+          {s} #{c.ranks[s]}
+        </span>
+      ))}
+    </span>
   );
 }
 

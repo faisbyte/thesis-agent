@@ -77,3 +77,10 @@ ol.chunks { padding-left: 20px; }
 ol.chunks li { margin: 6px 0; }
 .tag.via-embed { border-color: #7c3aed; color: #7c3aed; }
 .tag.via-keyword { border-color: #0d9488; color: #0d9488; }
+.explanation { font-size: 16px; margin: 8px 0 12px; }
+.stance { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.stance.supports { background: var(--ok-bg); color: var(--ok-fg); }
+.stance.contradicts { background: var(--no-bg); color: var(--no-fg); }
+.stance.mismatch { outline: 2px solid var(--part-fg); }
+.evidence.mismatch { background: var(--part-bg); padding: 6px 10px; border-radius: 0 6px 6px 0; }
+.tag + .tag { margin-left: 4px; }
