@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDb, PaperNotFoundError, type DB } from "../src/lib/db";
 import { ingestPaper } from "../src/lib/ingest";
@@ -112,5 +116,55 @@ describe("embeddings storage", () => {
     expect(orphans.n).toBe(0);
     // And the keyword index follows the new chunks too.
     expect(retrieveKeyword(db, PAPER_ID, ECHO)[0].text).toContain("Passages from the reference list are excluded");
+  });
+});
+
+describe("per-paper keyword scoring", () => {
+  // Shares vocabulary ("citation", "checking", "passages", "hand") with the blog fixture too.
+  const SENTENCE = "Checking citations by hand is slow, so the verifier retrieves passages and judges support.";
+  const ranking = () => retrieveKeyword(db, PAPER_ID, SENTENCE, 100).map((c) => ({ ordinal: c.ordinal, score: c.score }));
+  const ingestBlog = (force = false) => {
+    const { fn } = fakeFetch({ "https://blog.test/post": { body: fixture("blog-article.html") } });
+    return ingestPaper("https://blog.test/post", { db, fetchFn: fn, fetchOptions: { retryDelayMs: 0 }, force });
+  };
+
+  it("ingesting an unrelated paper leaves a paper's keyword ranking and scores unchanged", async () => {
+    await ingestFixturePaper(db);
+    const before = ranking();
+    expect(before.length).toBeGreaterThan(1);
+
+    expect((await ingestBlog()).outcome).toBe("FETCHED");
+    // The other paper really does share query terms, so a corpus-wide IDF would have moved these scores.
+    expect(retrieveKeyword(db, "https://blog.test/post", SENTENCE).length).toBeGreaterThan(0);
+
+    expect(ranking()).toEqual(before);
+  });
+
+  it("doesn't depend on index history: re-ingesting either paper gives identical scores", async () => {
+    await ingestFixturePaper(db);
+    await ingestBlog();
+    const before = ranking();
+    await ingestBlog(true); // other paper's chunks deleted and re-inserted with new ids
+    const { fn } = fakeFetch({ [arxivRoutes.html]: { body: fixture("arxiv-paper.html") } });
+    await ingestPaper(`https://arxiv.org/abs/${ARXIV_ID}`, { db, fetchFn: fn, fetchOptions: { retryDelayMs: 0 }, force: true });
+    expect(ranking()).toEqual(before);
+  });
+
+  it("leaves no temporary index behind", async () => {
+    await ingestFixturePaper(db);
+    retrieveKeyword(db, PAPER_ID, SENTENCE);
+    expect(db.prepare(`SELECT name FROM temp.sqlite_master WHERE name LIKE 'paper_fts%'`).all()).toEqual([]);
+  });
+
+  it("removes the old shared FTS index from an existing database", () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "thesis-db-")), "old.db");
+    const old = new Database(file);
+    old.exec(`CREATE TABLE chunks (id INTEGER PRIMARY KEY, paper_id TEXT, ordinal INTEGER, heading TEXT, text TEXT, char_start INTEGER, char_end INTEGER);
+              CREATE VIRTUAL TABLE chunks_fts USING fts5(text, heading, content='chunks', content_rowid='id');
+              CREATE TRIGGER chunks_fts_insert AFTER INSERT ON chunks BEGIN SELECT 1; END;`);
+    old.close();
+    const reopened = openDb(file);
+    expect(reopened.prepare(`SELECT name FROM sqlite_master WHERE name LIKE 'chunks_fts%'`).all()).toEqual([]);
+    reopened.close();
   });
 });

@@ -64,29 +64,20 @@ export function openDb(file: string = config.dbPath): DB {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
-  createKeywordIndex(db);
+  dropSharedKeywordIndex(db);
   return db;
 }
 
 /**
- * FTS5 index over chunk text, kept in sync with the chunks table by triggers.
- * Porter stemming so "routes"/"routing"/"routed" match each other.
+ * Earlier versions kept one FTS5 index over every paper's chunks. Keyword
+ * scoring is now per paper (retrieve-keyword.ts builds a temporary index per
+ * query), so remove the shared index and its sync triggers if they exist.
  */
-function createKeywordIndex(db: DB) {
-  const exists = db.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'chunks_fts'`).get();
-  if (exists) return;
+function dropSharedKeywordIndex(db: DB) {
   db.exec(`
-    CREATE VIRTUAL TABLE chunks_fts USING fts5(
-      text, heading, content='chunks', content_rowid='id', tokenize='porter unicode61'
-    );
-    CREATE TRIGGER chunks_fts_insert AFTER INSERT ON chunks BEGIN
-      INSERT INTO chunks_fts(rowid, text, heading) VALUES (new.id, new.text, new.heading);
-    END;
-    CREATE TRIGGER chunks_fts_delete AFTER DELETE ON chunks BEGIN
-      INSERT INTO chunks_fts(chunks_fts, rowid, text, heading) VALUES ('delete', old.id, old.text, old.heading);
-    END;
-    -- Index chunks stored before this index existed.
-    INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild');
+    DROP TRIGGER IF EXISTS chunks_fts_insert;
+    DROP TRIGGER IF EXISTS chunks_fts_delete;
+    DROP TABLE IF EXISTS chunks_fts;
   `);
 }
 

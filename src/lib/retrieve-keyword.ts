@@ -28,24 +28,43 @@ export function toFtsQuery(sentence: string): string | null {
 }
 
 /**
- * BM25 keyword retrieval over one paper's chunks via the chunks_fts index.
- * Chunks under References/Bibliography headings are excluded.
- * Note: FTS5's IDF statistics come from every stored paper, not just this one.
+ * BM25 keyword retrieval over one paper's chunks.
+ *
+ * Scoring is per paper: each call builds a temporary FTS5 index from just this
+ * paper's chunks, so BM25's IDF and length statistics come from this paper
+ * alone. A paper's keyword ranking therefore never changes when other papers
+ * are ingested, and doesn't depend on the history of any persistent index.
+ * (A shared index over all papers made rankings shift as papers were added.)
+ *
+ * Chunks under References/Bibliography headings are excluded from results;
+ * they still count towards the paper's statistics, like any other chunk.
  */
 export function retrieveKeyword(db: DB, paperIdOrUrl: string, sentence: string, limit = config.retrieveLimit): RetrievedChunk[] {
   const paper = getStoredPaper(db, paperIdOrUrl);
   const query = toFtsQuery(sentence);
   if (!query) return [];
 
+  // Temp tables live only on this connection and are dropped right after.
+  db.exec(`DROP TABLE IF EXISTS temp.paper_fts;
+           CREATE VIRTUAL TABLE temp.paper_fts USING fts5(text, heading, tokenize='porter unicode61');`);
+  try {
+    db.prepare(`INSERT INTO temp.paper_fts (rowid, text, heading) SELECT id, text, heading FROM chunks WHERE paper_id = ?`).run(paper.id);
+    return scorePaper(db, query, limit);
+  } finally {
+    db.exec(`DROP TABLE IF EXISTS temp.paper_fts`);
+  }
+}
+
+function scorePaper(db: DB, query: string, limit: number): RetrievedChunk[] {
   const rows = db
     .prepare(
       // bm25() is lower-is-better; text weighted 1.0, heading 0.5.
-      `SELECT c.id, c.ordinal, c.heading, c.text, c.char_start, c.char_end, -bm25(chunks_fts, 1.0, 0.5) AS score
-       FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
-       WHERE chunks_fts MATCH ? AND c.paper_id = ?
-       ORDER BY score DESC`,
+      `SELECT c.id, c.ordinal, c.heading, c.text, c.char_start, c.char_end, -bm25(paper_fts, 1.0, 0.5) AS score
+       FROM temp.paper_fts JOIN chunks c ON c.id = paper_fts.rowid
+       WHERE paper_fts MATCH ?
+       ORDER BY score DESC, c.ordinal`,
     )
-    .all(query, paper.id) as {
+    .all(query) as {
     id: number;
     ordinal: number;
     heading: string | null;
