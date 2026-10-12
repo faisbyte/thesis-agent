@@ -3,7 +3,19 @@
 import { useEffect, useState } from "react";
 import type { CheckItemResult, CheckResult, CheckRetriever } from "@/lib/check";
 import type { PaperSummary } from "@/lib/db";
-import { foundViaText, orderRows, toMarkdown, VERDICT_LABEL, verdictLabel, type BatchView } from "./batch-utils";
+import {
+  foundViaText,
+  isBorderline,
+  orderRows,
+  summarize,
+  toCsv,
+  toMarkdown,
+  topQuote,
+  VERDICT_LABEL,
+  verdictLabel,
+  type BatchFilter,
+  type BatchSort,
+} from "./batch-utils";
 
 export default function Home() {
   const [papers, setPapers] = useState<PaperSummary[] | null>(null);
@@ -124,14 +136,17 @@ function SingleCheckPanel({ papers, onIngested }: { papers: PaperSummary[]; onIn
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CheckItemResult | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const check = async (u: string, s: string) => {
     setRunning(true);
     setResult(null);
-    const r = await postCheck(url, sentence, retriever);
+    const r = await postCheck(u, s, retriever);
     setResult(r);
     setRunning(false);
     if (r.ingest?.outcome === "FETCHED") onIngested();
+  };
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    check(url, sentence);
   };
 
   return (
@@ -163,7 +178,7 @@ function SingleCheckPanel({ papers, onIngested }: { papers: PaperSummary[]; onIn
       </form>
       {url.trim() && !running && <IngestHint stored={findStored(papers, url)} retriever={retriever} />}
       {running && <p className="muted">Working… a first-time paper is fetched and embedded before the model call.</p>}
-      {result && <ItemResult item={result} />}
+      {result && <ItemResult item={result} onRecheck={() => check(result.url, result.sentence)} busy={running} />}
     </section>
   );
 }
@@ -216,7 +231,8 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
   const [retriever, setRetriever] = useState<CheckRetriever>("both");
   const [rows, setRows] = useState<{ input: BatchLine; result: CheckItemResult | null }[]>([]);
   const [running, setRunning] = useState(false);
-  const [view, setView] = useState<BatchView>("problems-first");
+  const [sort, setSort] = useState<BatchSort>("problems-first");
+  const [filter, setFilter] = useState<BatchFilter>("all");
   const [copied, setCopied] = useState<string | null>(null);
   const lines = parseBatch(text);
 
@@ -238,11 +254,38 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
     if (ingestedAny) onIngested();
   };
 
+  /** Re-run one row in place. */
+  const recheck = async (i: number) => {
+    const { input } = rows[i];
+    setRunning(true);
+    setRows((prev) => prev.map((row, j) => (j === i ? { ...row, result: null } : row)));
+    const result = await postCheck(input.url, input.sentence, retriever);
+    setRows((prev) => prev.map((row, j) => (j === i ? { ...row, result } : row)));
+    setRunning(false);
+    if (result.ingest?.outcome === "FETCHED") onIngested();
+  };
+
+  const clear = () => {
+    setText("");
+    setRows([]);
+    setCopied(null);
+  };
+
   const finished = rows.filter((r) => r.result).length;
-  const order = orderRows(rows, view);
+  const order = orderRows(rows, sort, filter);
+  const exportRows = () => order.map((i) => ({ result: rows[i].result, sentence: rows[i].input.sentence, url: rows[i].input.url }));
+
+  const downloadCsv = () => {
+    const blob = new Blob([toCsv(exportRows())], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `citation-checks-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
 
   const copyMarkdown = async () => {
-    const md = toMarkdown(order.map((i) => ({ line: i + 1, result: rows[i].result, sentence: rows[i].input.sentence, url: rows[i].input.url })));
+    const md = toMarkdown(exportRows());
     try {
       await navigator.clipboard.writeText(md);
       setCopied(`Copied ${order.length} row${order.length === 1 ? "" : "s"} as markdown.`);
@@ -279,28 +322,46 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
             <option value="side-by-side">side by side (2 model calls per line)</option>
           </select>
         </label>
-        <button onClick={run} disabled={running || lines.length === 0}>
-          {running ? `Checking ${finished + 1} of ${rows.length}…` : `Check ${lines.length} line${lines.length === 1 ? "" : "s"}`}
-        </button>
+        <span>
+          <button onClick={clear} disabled={running || (!text && rows.length === 0)} className="secondary">
+            Clear
+          </button>{" "}
+          <button onClick={run} disabled={running || lines.length === 0}>
+            {running ? `Checking ${Math.min(finished + 1, rows.length)} of ${rows.length}…` : `Check ${lines.length} line${lines.length === 1 ? "" : "s"}`}
+          </button>
+        </span>
       </div>
 
       {rows.length > 0 && (
         <>
+          <p className="summary">
+            <strong>{summarize(rows)}</strong>
+            <span className="muted"> · batch cost so far ≈ ${totalCost.toFixed(4)}</span>
+          </p>
           <div className="row">
-            <span className="muted">
-              {finished} of {rows.length} done · estimated model cost so far ${totalCost.toFixed(4)}
-            </span>
             <span>
               <label className="inline">
                 Show{" "}
-                <select value={view} onChange={(e) => setView(e.target.value as BatchView)}>
-                  <option value="problems-first">problems first (errors, unverified, irrelevant, partial)</option>
-                  <option value="problems-only">problems only</option>
-                  <option value="input-order">all, in input order</option>
+                <select value={filter} onChange={(e) => setFilter(e.target.value as BatchFilter)}>
+                  <option value="all">all</option>
+                  <option value="needs-attention">needs attention</option>
+                  <option value="relevant-only">relevant only</option>
                 </select>
               </label>{" "}
-              <button onClick={copyMarkdown} disabled={running || finished === 0}>
+              <label className="inline">
+                Sort{" "}
+                <select value={sort} onChange={(e) => setSort(e.target.value as BatchSort)}>
+                  <option value="problems-first">problems first</option>
+                  <option value="input-order">input order</option>
+                </select>
+              </label>
+            </span>
+            <span>
+              <button onClick={copyMarkdown} disabled={running || finished === 0} className="secondary">
                 Copy as markdown
+              </button>{" "}
+              <button onClick={downloadCsv} disabled={running || finished === 0} className="secondary">
+                Download CSV
               </button>
             </span>
           </div>
@@ -319,12 +380,20 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
               </thead>
               <tbody>
                 {order.map((i) => (
-                  <BatchRow key={i} index={i + 1} input={rows[i].input} result={rows[i].result} pending={running && !rows[i].result && i === finished} />
+                  <BatchRow
+                    key={i}
+                    index={i + 1}
+                    input={rows[i].input}
+                    result={rows[i].result}
+                    pending={running && !rows[i].result}
+                    busy={running}
+                    onRecheck={() => recheck(i)}
+                  />
                 ))}
                 {order.length === 0 && (
                   <tr>
                     <td colSpan={6} className="muted">
-                      No problem verdicts. Switch to “all” to see the {rows.length} relevant row{rows.length === 1 ? "" : "s"}.
+                      No rows match this filter. Choose “all” to see all {rows.length}.
                     </td>
                   </tr>
                 )}
@@ -337,11 +406,19 @@ function BatchCheckPanel({ onIngested }: { onIngested: () => void }) {
   );
 }
 
-function BatchRow({ index, input, result, pending }: { index: number; input: BatchLine; result: CheckItemResult | null; pending: boolean }) {
+function BatchRow(props: {
+  index: number;
+  input: BatchLine;
+  result: CheckItemResult | null;
+  pending: boolean;
+  busy: boolean;
+  onRecheck: () => void;
+}) {
+  const { index, input, result, pending, busy, onRecheck } = props;
   const [open, setOpen] = useState(false);
   const first = result?.results[0];
   // Lead with a quote whose stance cuts against the verdict, if there is one: that's the informative case.
-  const lead = first && (first.evidence.find((e) => isMismatch(first, e)) ?? first.evidence[0]);
+  const lead = first && topQuote(first);
   return (
     <>
       <tr className={result ? "clickable" : ""} onClick={() => result && setOpen(!open)}>
@@ -354,7 +431,12 @@ function BatchRow({ index, input, result, pending }: { index: number; input: Bat
           ) : result.error ? (
             <span className="badge error">ERROR</span>
           ) : (
-            result.results.map((r) => <VerdictBadge key={r.retriever} r={r} />)
+            result.results.map((r) => (
+              <span key={r.retriever}>
+                <VerdictBadge r={r} />
+                {isBorderline(r) && <span className="borderline">borderline</span>}
+              </span>
+            ))
           )}
         </td>
         <td>
@@ -374,7 +456,7 @@ function BatchRow({ index, input, result, pending }: { index: number; input: Bat
       {open && result && (
         <tr>
           <td colSpan={6} className="detail">
-            <ItemResult item={result} />
+            <ItemResult item={result} onRecheck={onRecheck} busy={busy} />
           </td>
         </tr>
       )}
@@ -384,15 +466,24 @@ function BatchRow({ index, input, result, pending }: { index: number; input: Bat
 
 // ---------------------------------------------------------------- result display
 
-function ItemResult({ item }: { item: CheckItemResult }) {
+function ItemResult({ item, onRecheck, busy }: { item: CheckItemResult; onRecheck: () => void; busy: boolean }) {
   return (
     <div className="result">
-      <CostSummary item={item} />
-      {item.error && <p className="bad">Error: {item.error}</p>}
+      {item.error && (
+        <p className="error-box">
+          <strong>Could not check this sentence.</strong> {item.error}
+        </p>
+      )}
       <div className={item.results.length > 1 ? "side-by-side" : ""}>
         {item.results.map((r) => (
           <VerdictDetail key={r.retriever} r={r} />
         ))}
+      </div>
+      <div className="row">
+        <CostSummary item={item} />
+        <button onClick={onRecheck} disabled={busy} className="secondary">
+          {busy ? "Running…" : "Re-check"}
+        </button>
       </div>
     </div>
   );
@@ -470,6 +561,13 @@ function VerdictDetail({ r }: { r: CheckResult }) {
       {!r.grounded && (
         <p className="bad">The model said {VERDICT_LABEL[r.verdict]}, but at least one quote isn't in the chunk it cites. Check by hand.</p>
       )}
+      {isBorderline(r) && (
+        <p className="borderline-note">
+          Borderline
+          {r.verdict === "relevant" ? ": relevant, but the evidence includes a contradicting quote." : ": partially relevant."} The
+          model can answer differently on a borderline case, so consider re-checking.
+        </p>
+      )}
       <p className="explanation">{r.explanation}</p>
 
       {r.evidence.length === 0 ? (
@@ -482,7 +580,10 @@ function VerdictDetail({ r }: { r: CheckResult }) {
             <div key={i} className={`evidence ${e.stance}${mismatch ? " mismatch" : ""}`}>
               <div>
                 <StanceTag stance={e.stance} mismatch={mismatch} /> <ViaTags c={c} />{" "}
-                <span className="muted">“{c.heading ?? "no heading"}”</span>
+                <span className="muted">
+                  “{c.heading ?? "no heading"}” ·{" "}
+                  {e.quoteStart !== null ? `chars ${e.quoteStart}–${e.quoteEnd}` : `chunk chars ${c.charStart}–${c.charEnd}, quote not located`}
+                </span>
               </div>
               <blockquote>{e.quote}</blockquote>
               <details>

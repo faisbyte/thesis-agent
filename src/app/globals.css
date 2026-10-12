@@ -84,3 +84,8 @@ ol.chunks li { margin: 6px 0; }
 .stance.mismatch { outline: 2px solid var(--part-fg); }
 .evidence.mismatch { background: var(--part-bg); padding: 6px 10px; border-radius: 0 6px 6px 0; }
 .tag + .tag { margin-left: 4px; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.summary { margin: 14px 0 6px; }
+.borderline { display: inline-block; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--part-bg); color: var(--part-fg); }
+.borderline-note { background: var(--part-bg); color: var(--part-fg); padding: 6px 10px; border-radius: 6px; font-size: 14px; }
+.error-box { background: var(--no-bg); color: var(--no-fg); padding: 8px 10px; border-radius: 6px; }
